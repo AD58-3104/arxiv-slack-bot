@@ -57,29 +57,27 @@ cat:cs.RO AND (all:humanoid OR all:biped OR all:bipedal OR all:legged OR all:qua
 
 ## 3. サーバーへの導入
 
-前提は、Python 3.10 以上と systemd が入った Linux サーバーです。以下は `/opt/arxiv-slack-bot` に置き、専用ユーザー `arxivbot` で動かす例です。
+前提は、[uv](https://docs.astral.sh/uv/) と systemd が入った Linux サーバーです。sudo は使わず、ログインユーザーの権限だけで構築します（ユーザー単位の systemd で動かします）。
 
 ```bash
-# 専用ユーザーとコードの配置
-sudo useradd --system --create-home --shell /usr/sbin/nologin arxivbot
-sudo mkdir -p /opt/arxiv-slack-bot
-sudo cp bot.py random_bot.py /opt/arxiv-slack-bot/   # git clone や scp でもよい
-cd /opt/arxiv-slack-bot
+# コードの配置（git clone や scp でもよい）
+mkdir -p ~/arxiv-slack-bot
+cp bot.py random_bot.py pyproject.toml uv.lock ~/arxiv-slack-bot/
+cd ~/arxiv-slack-bot
+uv sync   # .venv を作り、slack-bolt を入れる（bot.py は標準ライブラリだけで動く）
 
-# 依存ライブラリ（slack_bolt のみ。bot.py は標準ライブラリだけで動く）
-sudo python3 -m venv .venv
-sudo .venv/bin/pip install slack_bolt
-
-# 投稿済み ID を記録する seen.json をこのディレクトリに書き込むため、所有者を変更
-sudo chown -R arxivbot: /opt/arxiv-slack-bot
+# ログアウト中もユーザーのサービスを動かし続ける
+loginctl enable-linger
 ```
+
+`bot.py` は、投稿済みの論文 ID を同じディレクトリの `seen.json` に記録します。
 
 ### 環境変数ファイル
 
-`/etc/arxiv-slack-bot.env` を作ります。秘密情報を含むので、権限は 600 にします。
+`~/.config/arxiv-slack-bot.env` を作ります。秘密情報を含むので、権限は 600 にします。
 
 ```bash
-sudo tee /etc/arxiv-slack-bot.env > /dev/null <<'EOF'
+cat > ~/.config/arxiv-slack-bot.env <<'EOF'
 SLACK_WEBHOOK_URL=https://hooks.slack.com/services/XXX/YYY/ZZZ
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_APP_TOKEN=xapp-...
@@ -90,50 +88,46 @@ AZURE_TRANSLATOR_REGION=japaneast
 # 1 回に取得する新着の件数（既定は 50）
 # ARXIV_MAX_RESULTS=50
 EOF
-sudo chmod 600 /etc/arxiv-slack-bot.env
+chmod 600 ~/.config/arxiv-slack-bot.env
 ```
 
 ### 常駐: `/arxiv-random`
 
-`/etc/systemd/system/arxiv-random.service` を次の内容で作ります。
+`~/.config/systemd/user/arxiv-random.service` を次の内容で作ります。`%h` はホームディレクトリに置き換わります。
 
 ```ini
 [Unit]
 Description=arXiv random paper Slack bot
 After=network-online.target
-Wants=network-online.target
 
 [Service]
-User=arxivbot
-WorkingDirectory=/opt/arxiv-slack-bot
-EnvironmentFile=/etc/arxiv-slack-bot.env
-ExecStart=/opt/arxiv-slack-bot/.venv/bin/python random_bot.py
+WorkingDirectory=%h/arxiv-slack-bot
+EnvironmentFile=%h/.config/arxiv-slack-bot.env
+ExecStart=%h/arxiv-slack-bot/.venv/bin/python random_bot.py
 Restart=always
 RestartSec=10
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 ```
 
 ### 定期実行: 新着投稿
 
-`/etc/systemd/system/arxiv-new.service` を作ります。
+`~/.config/systemd/user/arxiv-new.service` を作ります。
 
 ```ini
 [Unit]
 Description=Post new arXiv papers to Slack
 After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=arxivbot
-WorkingDirectory=/opt/arxiv-slack-bot
-EnvironmentFile=/etc/arxiv-slack-bot.env
+WorkingDirectory=%h/arxiv-slack-bot
+EnvironmentFile=%h/.config/arxiv-slack-bot.env
 ExecStart=/usr/bin/python3 bot.py
 ```
 
-`/etc/systemd/system/arxiv-new.timer` を作ります。arXiv の新着は日本時間の朝 9〜10 時ごろに公開されるので、毎日 10 時に実行する設定にしています。
+`~/.config/systemd/user/arxiv-new.timer` を作ります。arXiv の新着は日本時間の朝 9〜10 時ごろに公開されるので、毎日 10 時に実行する設定にしています。
 
 ```ini
 [Unit]
@@ -152,26 +146,27 @@ WantedBy=timers.target
 ### 起動
 
 ```bash
-sudo systemctl daemon-reload
+systemctl --user daemon-reload
 
 # 初回は過去の新着が最大 50 件まとめて流れる。避けたいなら件数を絞って 1 度だけ手動実行する
 #（env ファイルで ARXIV_MAX_RESULTS を指定していると、そちらが優先される）
-sudo systemd-run --wait --uid=arxivbot \
-  -p EnvironmentFile=/etc/arxiv-slack-bot.env -E ARXIV_MAX_RESULTS=5 \
-  /usr/bin/python3 /opt/arxiv-slack-bot/bot.py
+systemd-run --user --wait --pipe -p WorkingDirectory=$HOME/arxiv-slack-bot \
+  -p EnvironmentFile=$HOME/.config/arxiv-slack-bot.env -E ARXIV_MAX_RESULTS=5 \
+  /usr/bin/python3 bot.py
 
-sudo systemctl enable --now arxiv-random.service arxiv-new.timer
+systemctl --user enable --now arxiv-random.service arxiv-new.timer
 ```
 
 ## 4. 動作確認・運用
 
 ```bash
-systemctl status arxiv-random.service       # 常駐しているか
-systemctl list-timers arxiv-new.timer       # 次回の実行予定
-sudo systemctl start arxiv-new.service      # 新着投稿をいま実行する
-journalctl -u arxiv-random -u arxiv-new -f  # ログ
+systemctl --user status arxiv-random.service       # 常駐しているか
+systemctl --user list-timers arxiv-new.timer       # 次回の実行予定
+systemctl --user start arxiv-new.service           # 新着投稿をいま実行する
+journalctl --user -u arxiv-random -u arxiv-new -f  # ログ
 ```
 
 - Slack の任意のチャンネルで `/arxiv-random` と打ち、論文が返ってくれば常駐側は動いています。
-- コードや環境変数を変えたら、`sudo systemctl restart arxiv-random` で再起動します。新着投稿側は次の実行から反映されます。
+- コードや環境変数を変えたら、`systemctl --user restart arxiv-random` で再起動します。新着投稿側は次の実行から反映されます。
+- 依存ライブラリを更新するときは、`uv lock --upgrade && uv sync` を実行してから再起動します。
 - `seen.json` を消すと、取得した範囲の新着が再び流れます。
