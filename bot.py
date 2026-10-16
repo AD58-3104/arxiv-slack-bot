@@ -39,6 +39,7 @@ def fetch_papers(start=0, max_results=MAX_RESULTS):
             "url": url,
             "title": " ".join(e.findtext(f"{ATOM}title").split()),
             "abstract": " ".join(e.findtext(f"{ATOM}summary").split()),
+            "published": e.findtext(f"{ATOM}published")[:10],  # 初版 (v1) の投稿日
         })
     return int(root.findtext("{http://a9.com/-/spec/opensearch/1.1/}totalResults")), papers
 
@@ -66,7 +67,10 @@ def slack_escape(s):
 
 
 def format_message(paper, abstract_ja):
-    return f"*<{paper['url']}|{slack_escape(paper['title'])}>*\n{slack_escape(abstract_ja)}"
+    return (
+        f"*<{paper['url']}|{slack_escape(paper['title'])}>*\n"
+        f"投稿日: {paper['published']}\n{slack_escape(abstract_ja)}"
+    )
 
 
 def post_slack(paper, abstract_ja):
