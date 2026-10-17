@@ -27,6 +27,8 @@ AZURE_REGION = os.environ["AZURE_TRANSLATOR_REGION"]
 SEEN_FILE = pathlib.Path(__file__).with_name("seen.json")
 SOURCE_FILE = pathlib.Path(__file__).with_name("source.txt")  # /paper-source で書き換える
 SOURCES = ("arxiv", "openalex")
+USAGE_FILE = pathlib.Path(__file__).with_name("usage.json")  # 月ごとの翻訳文字数
+MONTHLY_CHAR_LIMIT = int(os.environ.get("AZURE_MONTHLY_CHAR_LIMIT", "2000000"))  # F0 の無料枠
 ATOM = "{http://www.w3.org/2005/Atom}"
 
 
@@ -98,6 +100,21 @@ def random_paper():
     return fetch_arxiv(start=random.randrange(min(total, 30000)), max_results=1)[1][0]
 
 
+def monthly_usage():
+    """(今月, 今月このボットが翻訳した文字数) を返す。Azure の無料枠は UTC の暦月ごとにリセットされる。"""
+    month = time.strftime("%Y-%m", time.gmtime())
+    usage = json.loads(USAGE_FILE.read_text()) if USAGE_FILE.exists() else {}
+    return month, usage.get(month, 0)
+
+
+def add_usage(chars):
+    # ponytail: このボット経由の分だけを数える。同じキーを他で使うなら Azure Monitor のメトリクスを見る
+    month, used = monthly_usage()
+    usage = json.loads(USAGE_FILE.read_text()) if USAGE_FILE.exists() else {}
+    usage[month] = used + chars
+    USAGE_FILE.write_text(json.dumps(usage))
+
+
 def translate(text):
     if not text:
         return "（アブストラクトなし）"
@@ -114,7 +131,9 @@ def translate(text):
     for attempt in range(5):
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
-                return json.load(r)[0]["translations"][0]["text"]
+                result = json.load(r)[0]["translations"][0]["text"]
+            add_usage(len(text))
+            return result
         except urllib.error.HTTPError as e:
             # 無料プラン (F0) は 1 分あたりの文字数に上限があり、超えると 429 が返る
             if e.code != 429 or attempt == 4:

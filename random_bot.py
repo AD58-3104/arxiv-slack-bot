@@ -2,6 +2,7 @@
 
 /arxiv-random          : 現在の取得元で、検索式にマッチする全期間の論文から 1 本をランダムに返す
 /paper-source [名前]   : 取得元 (arxiv / openalex) を表示・切り替える
+/translator-usage      : 今月の Azure Translator の使用文字数と残りを返す
 """
 import os
 
@@ -41,6 +42,16 @@ def paper_source(ack, respond, command):
                 text=f"論文の取得元を {name} に切り替えました（現時点の新着 {len(new)} 件は既読扱い）")
     except Exception as e:
         respond(f"切り替えに失敗しました: {e}")
+
+
+@app.command("/translator-usage")
+def translator_usage(ack, respond):
+    ack()
+    month, used = bot.monthly_usage()
+    respond(
+        f"{month}（UTC）の翻訳文字数: {used:,} / {bot.MONTHLY_CHAR_LIMIT:,} 文字\n"
+        f"残り: {max(bot.MONTHLY_CHAR_LIMIT - used, 0):,} 文字（このボットが翻訳した分のみで計算）"
+    )
 
 
 if __name__ == "__main__":

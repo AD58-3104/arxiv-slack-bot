@@ -12,6 +12,9 @@ arXiv（または OpenAlex）の論文を Slack に流すボットです。投�
 | `/arxiv-random` | 現在の取得元で、全期間の該当論文から 1 本をランダムに返す |
 | `/paper-source` | 現在の取得元を表示する |
 | `/paper-source arxiv` / `/paper-source openalex` | 取得元を切り替える。切り替えた時点の新着は既読扱いにし、過去の論文がまとめて流れないようにする |
+| `/translator-usage` | 今月の Azure Translator の使用文字数と、無料枠の残りを返す（打った本人にだけ表示） |
+
+`/translator-usage` の値は、このボットが翻訳に送った文字数を `usage.json` に月ごと（UTC）に記録して計算したものです。同じキーを他でも使っている場合や、記録を始める前の分は含まれません。正確な値は Azure Portal の Translator リソース →「メトリック」の「Text Characters Translated」で確認できます。無料枠以外のプランでは、環境変数 `AZURE_MONTHLY_CHAR_LIMIT` で上限を変えられます。
 
 ## 取得元
 
@@ -63,6 +66,7 @@ cat:cs.RO AND (all:humanoid OR all:biped OR all:bipedal OR all:legged OR all:qua
    - 左メニュー「Slash Commands」→「Create New Command」を開きます。
    - Command は `/arxiv-random`、Short Description は任意（例: 論文をランダムに 1 本紹介）にして保存します。
    - 同じ手順で `/paper-source` も作ります。Short Description は任意（例: 論文の取得元を切り替え）、Usage Hint は `[arxiv|openalex]` にします。
+   - 同じ手順で `/translator-usage` も作ります。Short Description は任意（例: 翻訳の残り文字数）です。
    - Socket Mode が有効なら Request URL の欄は出ないので、入力は要りません。
 
 4. **Incoming Webhook を有効にする**（`bot.py` 用）
