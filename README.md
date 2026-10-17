@@ -1,13 +1,30 @@
 # arxiv-slack-bot
 
-arXiv の論文を Slack に流すボットです。投稿の形式は、タイトル（英語のまま）と、Azure Translator で日本語訳したアブストラクトです。
+arXiv（または OpenAlex）の論文を Slack に流すボットです。投稿の形式は、タイトル（英語のまま）、投稿日、Azure Translator で日本語訳したアブストラクトです。
 
 | ファイル | 役割 | 動かし方 |
 |---|---|---|
 | `bot.py` | 検索式にマッチする新着論文を Incoming Webhook で投稿する | 定期実行（systemd timer） |
-| `random_bot.py` | `/arxiv-random` で、全期間の該当論文から 1 本をランダムに返す | 常駐（systemd service） |
+| `random_bot.py` | スラッシュコマンドを受け付ける（下表） | 常駐（systemd service） |
 
-検索式は環境変数 `ARXIV_QUERY` で指定します。指定しない場合は `bot.py` に書いた次の式を使います（ロボティクス分野で、ヒューマノイド・二足・脚・四足のいずれかを含み、かつ強化学習に関するもの）。
+| コマンド | 動作 |
+|---|---|
+| `/arxiv-random` | 現在の取得元で、全期間の該当論文から 1 本をランダムに返す |
+| `/paper-source` | 現在の取得元を表示する |
+| `/paper-source arxiv` / `/paper-source openalex` | 取得元を切り替える。切り替えた時点の新着は既読扱いにし、過去の論文がまとめて流れないようにする |
+
+## 取得元
+
+| 取得元 | 対象 | 検索式の環境変数 |
+|---|---|---|
+| `arxiv`（既定） | arXiv のみ | `ARXIV_QUERY` |
+| `openalex` | [OpenAlex](https://openalex.org/)。arXiv に加え、論文誌・国際会議・他のプレプリントサーバーを含む | `OPENALEX_QUERY` |
+
+切り替えた結果は `source.txt` に保存され、新着投稿とランダム紹介の両方に反映されます。OpenAlex に載っている arXiv 論文は arXiv の ID で記録するので、取得元を切り替えても同じ論文は二重に流れません。OpenAlex には、アブストラクトがない論文（主に論文誌）もあります。その場合は「（アブストラクトなし）」と表示します。
+
+### arXiv の検索式
+
+`ARXIV_QUERY` を指定しない場合は、`bot.py` に書いた次の式を使います（ロボティクス分野で、ヒューマノイド・二足・脚・四足のいずれかを含み、かつ強化学習に関するもの）。
 
 ```
 cat:cs.RO AND (all:humanoid OR all:biped OR all:bipedal OR all:legged OR all:quadruped) AND (all:"reinforcement learning" OR abs:RL)
@@ -17,6 +34,16 @@ cat:cs.RO AND (all:humanoid OR all:biped OR all:bipedal OR all:legged OR all:qua
 
 - 語形はまとめて検索されません。`biped` と `bipedal` は別の語として扱われます。
 - `all:` はタイトルやアブストラクトなど全体を、`abs:` はアブストラクトだけを対象にします。
+
+### OpenAlex の検索式
+
+`OPENALEX_QUERY` を指定しない場合は、次の式でタイトルとアブストラクトを検索します。対象は、種別がプレプリント・論文・国際会議論文のものに限ります。
+
+```
+(humanoid OR biped OR bipedal OR legged OR quadruped) AND "reinforcement learning"
+```
+
+`AND` / `OR` / `"..."` が使えます。OpenAlex には arXiv の `cs.RO` のような分野の指定がないので、ロボティクス以外の論文が少し混ざります。カンマは使えません（フィルタの区切り文字として扱われるため）。
 
 ---
 
@@ -35,6 +62,7 @@ cat:cs.RO AND (all:humanoid OR all:biped OR all:bipedal OR all:legged OR all:qua
 3. **スラッシュコマンドを追加する**
    - 左メニュー「Slash Commands」→「Create New Command」を開きます。
    - Command は `/arxiv-random`、Short Description は任意（例: 論文をランダムに 1 本紹介）にして保存します。
+   - 同じ手順で `/paper-source` も作ります。Short Description は任意（例: 論文の取得元を切り替え）、Usage Hint は `[arxiv|openalex]` にします。
    - Socket Mode が有効なら Request URL の欄は出ないので、入力は要りません。
 
 4. **Incoming Webhook を有効にする**（`bot.py` 用）
@@ -85,6 +113,7 @@ AZURE_TRANSLATOR_KEY=...
 AZURE_TRANSLATOR_REGION=japaneast
 # 検索式を変えるときだけ指定する。中に " があるので全体を ' で囲む
 # ARXIV_QUERY='cat:cs.RO AND all:humanoid AND (all:"reinforcement learning" OR abs:RL)'
+# OPENALEX_QUERY='humanoid AND "reinforcement learning"'
 # 1 回に取得する新着の件数（既定は 50）
 # ARXIV_MAX_RESULTS=50
 EOF
