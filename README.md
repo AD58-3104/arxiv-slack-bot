@@ -1,6 +1,7 @@
 # arxiv-slack-bot
 
 arXiv（または OpenAlex）の論文を Slack に流すボットです。投稿の形式は、タイトル（英語のまま）、投稿日、Azure Translator で日本語訳したアブストラクトです。
+その論文に [alphaXiv](https://www.alphaxiv.org/) の要約ブログ（AI overview）があれば、そのリンクも付けます（arXiv の論文のみ）。
 
 | ファイル | 役割 | 動かし方 |
 |---|---|---|

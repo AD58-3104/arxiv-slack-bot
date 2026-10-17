@@ -3,6 +3,7 @@ import json
 import os
 import pathlib
 import random
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -30,6 +31,7 @@ SOURCES = ("arxiv", "openalex")
 USAGE_FILE = pathlib.Path(__file__).with_name("usage.json")  # 月ごとの翻訳文字数
 MONTHLY_CHAR_LIMIT = int(os.environ.get("AZURE_MONTHLY_CHAR_LIMIT", "2000000"))  # F0 の無料枠
 ATOM = "{http://www.w3.org/2005/Atom}"
+USER_AGENT = "arxiv-slack-bot/0.1 (+https://github.com/AD58-3104/arxiv-slack-bot)"
 
 
 def get_source():
@@ -145,10 +147,26 @@ def slack_escape(s):
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def alphaxiv_url(paper_id):
+    """alphaXiv に要約ブログがあればその URL を、なければ None を返す。"""
+    if not re.fullmatch(r"\d{4}\.\d{4,5}", paper_id):  # arXiv 以外 (OpenAlex の W...) は対象外
+        return None
+    url = f"https://www.alphaxiv.org/overview/{paper_id}"
+    # 公式 API がないので HTML に要約本文があるかで判定する。Python 既定の UA は 403 になる
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return url if b"markdown-content blog-post" in r.read() else None
+    except Exception:
+        return None  # alphaXiv 側の不調で投稿自体を止めない
+
+
 def format_message(paper, abstract_ja):
+    blog = alphaxiv_url(paper["id"])
     return (
         f"*<{paper['url']}|{slack_escape(paper['title'])}>*\n"
         f"投稿日: {paper['published']}\n{slack_escape(abstract_ja)}"
+        + (f"\n<{blog}|alphaXiv の解説>" if blog else "")
     )
 
 
