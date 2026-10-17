@@ -23,7 +23,7 @@ def arxiv_random(ack, respond):
     try:
         paper = pick_random_paper()
         respond(response_type="in_channel", unfurl_links=False,
-                text=bot.format_message(paper, bot.translate([paper["abstract"]])[0]))
+                text=bot.format_message(paper, bot.translate(paper["abstract"])))
     except Exception as e:
         respond(f"論文の取得に失敗しました: {e}")
 

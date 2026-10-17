@@ -2,6 +2,8 @@
 import json
 import os
 import pathlib
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -44,22 +46,26 @@ def fetch_papers(start=0, max_results=MAX_RESULTS):
     return int(root.findtext("{http://a9.com/-/spec/opensearch/1.1/}totalResults")), papers
 
 
-def translate(texts):
-    out = []
-    for i in range(0, len(texts), 10):  # 1 リクエスト 50,000 文字制限があるので分割
-        req = urllib.request.Request(
-            "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&to=ja",
-            data=json.dumps([{"Text": t} for t in texts[i:i + 10]]).encode(),
-            headers={
-                "Ocp-Apim-Subscription-Key": AZURE_KEY,
-                "Ocp-Apim-Subscription-Region": AZURE_REGION,
-                "Content-Type": "application/json",
-                "X-ClientTraceId": str(uuid.uuid4()),
-            },
-        )
-        with urllib.request.urlopen(req, timeout=60) as r:
-            out += [d["translations"][0]["text"] for d in json.load(r)]
-    return out
+def translate(text):
+    req = urllib.request.Request(
+        "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&to=ja",
+        data=json.dumps([{"Text": text}]).encode(),
+        headers={
+            "Ocp-Apim-Subscription-Key": AZURE_KEY,
+            "Ocp-Apim-Subscription-Region": AZURE_REGION,
+            "Content-Type": "application/json",
+            "X-ClientTraceId": str(uuid.uuid4()),
+        },
+    )
+    for attempt in range(5):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return json.load(r)[0]["translations"][0]["text"]
+        except urllib.error.HTTPError as e:
+            # 無料プラン (F0) は 1 分あたりの文字数に上限があり、超えると 429 が返る
+            if e.code != 429 or attempt == 4:
+                raise
+            time.sleep(int(e.headers.get("Retry-After") or 60))
 
 
 def slack_escape(s):
@@ -87,8 +93,8 @@ def main():
     new = [p for p in fetch_papers()[1][::-1] if p["id"] not in seen]  # 古い順に投稿
     if not new:
         return
-    for paper, ja in zip(new, translate([p["abstract"] for p in new])):
-        post_slack(paper, ja)
+    for paper in new:
+        post_slack(paper, translate(paper["abstract"]))
         seen.append(paper["id"])
         SEEN_FILE.write_text(json.dumps(seen[-2000:]))  # 投稿ごとに保存し、途中失敗で二重投稿しない
 
