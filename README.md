@@ -3,6 +3,11 @@
 arXiv（または OpenAlex）の論文を Slack に流すボットです。投稿の形式は、タイトル（英語のまま）、投稿日、Azure Translator で日本語訳したアブストラクトです。
 その論文に [alphaXiv](https://www.alphaxiv.org/) の要約ブログ（AI overview）があれば、そのリンクも付けます（arXiv の論文のみ）。
 
+毎朝の新着投稿では、ほかに次のメッセージも流します。
+
+- **新着がない日:** 「本日の新着論文はありません（取得元: arxiv）」と投稿します。arXiv は土日に新着を公開しないので、土日の朝は基本的にこれが流れます。
+- **エラーが起きた日:** 翻訳のレート制限（429）や arXiv の障害などで失敗したら、「⚠️ フィード「…」の新着投稿でエラーが発生しました」と、エラーの種類と発生したサービスを投稿します。投稿できなかった論文は、次回の実行で再び投稿を試みます。
+
 | ファイル | 役割 | 動かし方 |
 |---|---|---|
 | `bot.py` | 検索式にマッチする新着論文を Incoming Webhook で投稿する | 定期実行（systemd timer） |
@@ -53,19 +58,26 @@ cat:cs.RO AND (all:humanoid OR all:biped OR all:bipedal OR all:legged OR all:qua
 
 検索条件と投稿先チャンネルの組を「フィード」と呼びます。`bot.py` と同じディレクトリに `feeds.json` を置くと、フィードを複数定義できます。`feeds.json` がなければ、環境変数の設定を使う `default` という 1 つのフィードとして動きます。
 
+運用中のサーバーの `feeds.json` は次の内容です（Webhook URL は伏せています）。`default` は環境変数・既定値の設定をそのまま使います。
+
 ```json
 {
-  "default": {
-    "channel_id": "C0123456789"
-  },
+  "default": {},
   "world-model": {
     "webhook_url": "https://hooks.slack.com/services/XXX/YYY/ZZZ",
-    "channel_id": "C0987654321",
-    "arxiv_query": "cat:cs.LG AND all:\"world model\"",
-    "openalex_query": "\"world model\" AND \"reinforcement learning\""
+    "channel_id": "C0CA8L2AZ0C",
+    "arxiv_query": "(cat:cs.LG OR cat:cs.RO) AND all:\"world model\"",
+    "openalex_query": "\"world model\" AND learning"
   }
 }
 ```
+
+| フィード | 検索条件 | 投稿先 | 件数の目安 |
+|---|---|---|---|
+| `default` | ロボティクス（cs.RO）で、ヒューマノイド・二足・脚・四足 × 強化学習 | 既存のチャンネル（`SLACK_WEBHOOK_URL`） | 1 日約 5 件 |
+| `world-model` | 機械学習（cs.LG）またはロボティクス（cs.RO）で、world model に関するもの | 世界モデル用のチャンネル | 1 日約 15 件 |
+
+`world-model` の OpenAlex の検索式は、Zenodo に登録された無関係な論文がかなり混ざります。このフィードは arXiv を取得元にして使う前提です。
 
 | 項目 | 内容 | 省略時 |
 |---|---|---|
@@ -78,7 +90,8 @@ cat:cs.RO AND (all:humanoid OR all:biped OR all:bipedal OR all:legged OR all:qua
 - 毎朝の実行では、すべてのフィードを順に処理し、それぞれの投稿先に流します。あるフィードで失敗しても、他のフィードは処理を続けます。
 - `/arxiv-random` と `/paper-source` は、コマンドを打ったチャンネルの `channel_id` を持つフィードが対象です。一致するフィードがなければ、`feeds.json` の先頭のフィードが対象になります。チャンネル ID は、Slack でチャンネル名をクリックした詳細画面の一番下に表示されます。
 - 投稿済みの論文 ID は `seen-<フィード名>.json` に、取得元は `source-<フィード名>.txt` に、フィードごとに記録します。フィードの名前を変えると記録が引き継がれないので、ファイル名も合わせて変えてください。
-- 新しいフィードを追加すると、最初の実行で直近 `max_results` 件がまとめて流れます。避けたい場合は、追加後に `/paper-source arxiv` をそのフィードのチャンネルで打つと、その時点の新着を既読にできます。
+- 新しいフィードを追加すると、最初の実行で直近 `max_results` 件がまとめて流れます。避けたい場合は、追加後に `/paper-source arxiv` をそのフィードのチャンネルで打つと、その時点の新着を既読にできます。検索式を広げたときも同じです。
+- `feeds.json` は実行のたびに読み直すので、書き換えても再起動は要りません。
 - Webhook URL を含むので、`chmod 600 feeds.json` にしてください。Git の管理対象からは外してあります。
 - **翻訳の量に注意:** `cat:cs.LG` のような広い分野は 1 日 300 件ほどあり、Azure Translator の無料枠（月 200 万文字）を大きく超えます。キーワードで絞ってください。
 
@@ -234,6 +247,8 @@ journalctl --user -u arxiv-random -u arxiv-new -f  # ログ
 ```
 
 - Slack の任意のチャンネルで `/arxiv-random` と打ち、論文が返ってくれば常駐側は動いています。
+- 新着投稿でエラーが起きると、そのフィードのチャンネルに ⚠️ のメッセージが届きます。`feeds.json` の読み込みに失敗した場合は、`SLACK_WEBHOOK_URL` のチャンネルに届きます。詳細は `journalctl --user -u arxiv-new` で確認できます。
+- `/arxiv-random` などのコマンドのエラーは、コマンドを打った本人にだけ返します。常駐プロセス自体が落ち続ける場合（トークンの失効など）は通知されないので、コマンドが反応しなくなったら `systemctl --user status arxiv-random.service` を確認してください。
 - コードや環境変数を変えたら、`systemctl --user restart arxiv-random` で再起動します。新着投稿側は次の実行から反映されます。
 - 依存ライブラリを更新するときは、`uv lock --upgrade && uv sync` を実行してから再起動します。
 - `seen-<フィード名>.json` を消すと、取得した範囲の新着が再び流れます。
