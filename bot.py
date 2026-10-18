@@ -170,10 +170,10 @@ def format_message(paper, abstract_ja):
     )
 
 
-def post_slack(paper, abstract_ja):
+def post_slack(text):
     req = urllib.request.Request(
         os.environ["SLACK_WEBHOOK_URL"],
-        data=json.dumps({"text": format_message(paper, abstract_ja), "unfurl_links": False}).encode(),
+        data=json.dumps({"text": text, "unfurl_links": False}).encode(),
         headers={"Content-Type": "application/json"},
     )
     urllib.request.urlopen(req, timeout=30).close()
@@ -189,8 +189,11 @@ def save_seen(seen):
 
 def main():
     seen = load_seen()
-    for paper in [p for p in fetch_new()[::-1] if p["id"] not in seen]:  # 古い順に投稿
-        post_slack(paper, translate(paper["abstract"]))
+    new = [p for p in fetch_new()[::-1] if p["id"] not in seen]  # 古い順に投稿
+    if not new:
+        post_slack(f"本日の新着論文はありません（取得元: {get_source()}）")
+    for paper in new:
+        post_slack(format_message(paper, translate(paper["abstract"])))
         seen.append(paper["id"])
         save_seen(seen)  # 投稿ごとに保存し、途中失敗で二重投稿しない
 
