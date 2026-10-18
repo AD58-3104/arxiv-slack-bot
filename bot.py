@@ -231,15 +231,48 @@ def run_feed(feed):
         save_seen(feed, seen)  # 投稿ごとに保存し、途中失敗で二重投稿しない
 
 
+def describe_error(e):
+    """Slack に出すエラーの一行説明。HTTP エラーはどのサービスで起きたかも付ける。"""
+    text = f"{type(e).__name__}: {e}"
+    if isinstance(e, urllib.error.HTTPError):
+        host = urllib.parse.urlparse(e.url).hostname or ""
+        hint = {"api.cognitive.microsofttranslator.com": "Azure Translator",
+                "export.arxiv.org": "arXiv", "api.openalex.org": "OpenAlex",
+                "hooks.slack.com": "Slack"}.get(host, host)
+        text += f"（{hint}）"
+        if e.code == 429:
+            text += "\nリクエストが多すぎて制限されました。時間をおけば回復します。"
+    return text
+
+
+def notify_error(feed, e):
+    """エラーを Slack に知らせる。Slack 自体に届かない場合はログに残すだけにする。"""
+    print(f"[{feed['name']}] 失敗", file=sys.stderr)
+    traceback.print_exc()
+    try:
+        post_slack(feed, (
+            f":warning: フィード「{feed['name']}」の新着投稿でエラーが発生しました\n"
+            f"```{slack_escape(describe_error(e))}```\n"
+            "投稿できなかった論文は、次回の実行で再び投稿を試みます。"
+            "詳細はサーバーで `journalctl --user -u arxiv-new` を確認してください。"
+        ))
+    except Exception:
+        traceback.print_exc()
+
+
 def main():
+    try:
+        feeds = load_feeds()
+    except Exception as e:  # feeds.json の書き間違いなど。フィードが分からないので既定の Webhook に送る
+        notify_error({"name": "(設定の読み込み)", "webhook_url": os.environ.get("SLACK_WEBHOOK_URL")}, e)
+        sys.exit(1)
     failed = False
-    for feed in load_feeds().values():
+    for feed in feeds.values():
         try:
             run_feed(feed)
-        except Exception:
-            # 1 つのフィードの失敗で他のフィードを止めない。失敗はログに残し、終了コードで知らせる
-            print(f"[{feed['name']}] 失敗", file=sys.stderr)
-            traceback.print_exc()
+        except Exception as e:
+            # 1 つのフィードの失敗で他のフィードを止めない。失敗は Slack とログに残し、終了コードで知らせる
+            notify_error(feed, e)
             failed = True
     sys.exit(1 if failed else 0)
 
