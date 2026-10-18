@@ -1,5 +1,6 @@
 __pycache__/
 .venv/
-seen.json
-source.txt
+seen-*.json
+source-*.txt
 usage.json
+feeds.json

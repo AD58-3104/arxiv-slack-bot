@@ -3,6 +3,9 @@
 /arxiv-random          : 現在の取得元で、検索式にマッチする全期間の論文から 1 本をランダムに返す
 /paper-source [名前]   : 取得元 (arxiv / openalex) を表示・切り替える
 /translator-usage      : 今月の Azure Translator の使用文字数と残りを返す
+
+/arxiv-random と /paper-source は、コマンドを打ったチャンネルの channel_id を持つフィードが対象。
+該当がなければ feeds.json の先頭のフィードが対象になる。
 """
 import os
 
@@ -15,10 +18,10 @@ app = App(token=os.environ["SLACK_BOT_TOKEN"])
 
 
 @app.command("/arxiv-random")
-def arxiv_random(ack, respond):
+def arxiv_random(ack, respond, command):
     ack()  # Slack は 3 秒以内の応答を要求するので先に返す
     try:
-        paper = bot.random_paper()
+        paper = bot.random_paper(bot.feed_for_channel(command["channel_id"]))
         respond(response_type="in_channel", unfurl_links=False,
                 text=bot.format_message(paper, bot.translate(paper["abstract"])))
     except Exception as e:
@@ -28,18 +31,20 @@ def arxiv_random(ack, respond):
 @app.command("/paper-source")
 def paper_source(ack, respond, command):
     ack()
+    feed = bot.feed_for_channel(command["channel_id"])
     name = command["text"].strip().lower()
     if name not in bot.SOURCES:
-        respond(f"現在の取得元: {bot.get_source()}\n切り替えは `/paper-source arxiv` または `/paper-source openalex`")
+        respond(f"フィード「{feed['name']}」の現在の取得元: {bot.get_source(feed)}\n"
+                "切り替えは `/paper-source arxiv` または `/paper-source openalex`")
         return
     try:
-        bot.SOURCE_FILE.write_text(name)
+        bot.source_file(feed).write_text(name)
         # 切り替え直後に過去の論文がまとめて流れないよう、今の新着は既読にしておく
-        seen = bot.load_seen()
-        new = [p["id"] for p in bot.fetch_new() if p["id"] not in seen]
-        bot.save_seen(seen + new)
+        seen = bot.load_seen(feed)
+        new = [p["id"] for p in bot.fetch_new(feed) if p["id"] not in seen]
+        bot.save_seen(feed, seen + new)
         respond(response_type="in_channel",
-                text=f"論文の取得元を {name} に切り替えました（現時点の新着 {len(new)} 件は既読扱い）")
+                text=f"フィード「{feed['name']}」の取得元を {name} に切り替えました（現時点の新着 {len(new)} 件は既読扱い）")
     except Exception as e:
         respond(f"切り替えに失敗しました: {e}")
 

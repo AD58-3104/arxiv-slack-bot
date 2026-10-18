@@ -1,10 +1,15 @@
-"""arXiv または OpenAlex の新着論文を Slack に流す。cron 等で定期実行する想定。"""
+"""arXiv または OpenAlex の新着論文を Slack に流す。cron 等で定期実行する想定。
+
+検索式と投稿先の組（フィード）は feeds.json で複数定義できる。なければ環境変数の設定で 1 フィードとして動く。
+"""
 import json
 import os
 import pathlib
 import random
 import re
+import sys
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -12,7 +17,7 @@ import uuid
 import xml.etree.ElementTree as ET
 
 # arXiv API の検索式。書き方: https://info.arxiv.org/help/api/user-manual.html#query_details
-QUERY = os.environ.get(
+ARXIV_QUERY = os.environ.get(
     "ARXIV_QUERY",
     'cat:cs.RO AND (all:humanoid OR all:biped OR all:bipedal OR all:legged OR all:quadruped)'
     ' AND (all:"reinforcement learning" OR abs:RL)',
@@ -23,10 +28,10 @@ OPENALEX_QUERY = os.environ.get(
     '(humanoid OR biped OR bipedal OR legged OR quadruped) AND "reinforcement learning"',
 )
 MAX_RESULTS = int(os.environ.get("ARXIV_MAX_RESULTS", "50"))
+FEEDS_FILE = pathlib.Path(__file__).with_name("feeds.json")
+STATE_DIR = pathlib.Path(__file__).parent  # フィードごとの seen-<名前>.json / source-<名前>.txt を置く
 AZURE_KEY = os.environ["AZURE_TRANSLATOR_KEY"]
 AZURE_REGION = os.environ["AZURE_TRANSLATOR_REGION"]
-SEEN_FILE = pathlib.Path(__file__).with_name("seen.json")
-SOURCE_FILE = pathlib.Path(__file__).with_name("source.txt")  # /paper-source で書き換える
 SOURCES = ("arxiv", "openalex")
 USAGE_FILE = pathlib.Path(__file__).with_name("usage.json")  # 月ごとの翻訳文字数
 MONTHLY_CHAR_LIMIT = int(os.environ.get("AZURE_MONTHLY_CHAR_LIMIT", "2000000"))  # F0 の無料枠
@@ -34,18 +39,42 @@ ATOM = "{http://www.w3.org/2005/Atom}"
 USER_AGENT = "arxiv-slack-bot/0.1 (+https://github.com/AD58-3104/arxiv-slack-bot)"
 
 
-def get_source():
-    return SOURCE_FILE.read_text().strip() if SOURCE_FILE.exists() else "arxiv"
+def load_feeds():
+    """{名前: フィード設定} を返す。feeds.json に書かなかった項目は環境変数・既定値で埋める。"""
+    feeds = json.loads(FEEDS_FILE.read_text()) if FEEDS_FILE.exists() else {"default": {}}
+    return {name: {
+        "name": name,
+        "webhook_url": os.environ.get("SLACK_WEBHOOK_URL"),
+        "channel_id": None,  # スラッシュコマンドを打ったチャンネルからフィードを選ぶのに使う
+        "arxiv_query": ARXIV_QUERY,
+        "openalex_query": OPENALEX_QUERY,
+        "max_results": MAX_RESULTS,
+        **cfg,
+    } for name, cfg in feeds.items()}
 
 
-def fetch_arxiv(start=0, max_results=MAX_RESULTS):
+def feed_for_channel(channel_id):
+    """channel_id が一致するフィード。なければ feeds.json の先頭のフィード。"""
+    feeds = list(load_feeds().values())
+    return next((f for f in feeds if f["channel_id"] == channel_id), feeds[0])
+
+
+def source_file(feed):
+    return STATE_DIR / f"source-{feed['name']}.txt"  # /paper-source で書き換える
+
+
+def get_source(feed):
+    return source_file(feed).read_text().strip() if source_file(feed).exists() else "arxiv"
+
+
+def fetch_arxiv(feed, start=0, max_results=None):
     """新しい順に start 件目から取得し、(全期間の該当件数, 論文リスト) を返す。"""
     params = urllib.parse.urlencode({
-        "search_query": QUERY,
+        "search_query": feed["arxiv_query"],
         "sortBy": "submittedDate",
         "sortOrder": "descending",
         "start": start,
-        "max_results": max_results,
+        "max_results": max_results or feed["max_results"],
     })
     with urllib.request.urlopen(f"https://export.arxiv.org/api/query?{params}", timeout=60) as r:
         root = ET.fromstring(r.read())
@@ -62,9 +91,9 @@ def fetch_arxiv(start=0, max_results=MAX_RESULTS):
     return int(root.findtext("{http://a9.com/-/spec/opensearch/1.1/}totalResults")), papers
 
 
-def fetch_openalex(**params):
+def fetch_openalex(feed, **params):
     """OpenAlex の /works を検索する。params は sort, per-page, sample などをそのまま渡す。"""
-    params["filter"] = (f"title_and_abstract.search:{OPENALEX_QUERY},"
+    params["filter"] = (f"title_and_abstract.search:{feed['openalex_query']},"
                         "type:article|preprint|conference-paper")  # 本・データセット等を除く
     url = f"https://api.openalex.org/works?{urllib.parse.urlencode(params)}"
     with urllib.request.urlopen(url, timeout=60) as r:
@@ -86,20 +115,20 @@ def fetch_openalex(**params):
     return papers
 
 
-def fetch_new():
-    """現在の取得元から新しい順に MAX_RESULTS 件を返す。"""
-    if get_source() == "openalex":
-        return fetch_openalex(sort="publication_date:desc", **{"per-page": MAX_RESULTS})
-    return fetch_arxiv()[1]
+def fetch_new(feed):
+    """フィードの現在の取得元から新しい順に max_results 件を返す。"""
+    if get_source(feed) == "openalex":
+        return fetch_openalex(feed, sort="publication_date:desc", **{"per-page": feed["max_results"]})
+    return fetch_arxiv(feed)[1]
 
 
-def random_paper():
-    """現在の取得元で、検索式にマッチする全期間の論文から 1 本をランダムに返す。"""
-    if get_source() == "openalex":
-        return fetch_openalex(sample=1, seed=random.randrange(10**9))[0]
-    total, _ = fetch_arxiv(max_results=1)  # max_results=0 は arXiv が 500 を返す
+def random_paper(feed):
+    """フィードの現在の取得元で、検索式にマッチする全期間の論文から 1 本をランダムに返す。"""
+    if get_source(feed) == "openalex":
+        return fetch_openalex(feed, sample=1, seed=random.randrange(10**9))[0]
+    total, _ = fetch_arxiv(feed, max_results=1)  # max_results=0 は arXiv が 500 を返す
     # ponytail: arXiv API は start 30000 件目以降を返さない。該当件数がそれを超えたら日付範囲で分割して引く
-    return fetch_arxiv(start=random.randrange(min(total, 30000)), max_results=1)[1][0]
+    return fetch_arxiv(feed, start=random.randrange(min(total, 30000)), max_results=1)[1][0]
 
 
 def monthly_usage():
@@ -170,32 +199,49 @@ def format_message(paper, abstract_ja):
     )
 
 
-def post_slack(text):
+def post_slack(feed, text):
     req = urllib.request.Request(
-        os.environ["SLACK_WEBHOOK_URL"],
+        feed["webhook_url"],
         data=json.dumps({"text": text, "unfurl_links": False}).encode(),
         headers={"Content-Type": "application/json"},
     )
     urllib.request.urlopen(req, timeout=30).close()
 
 
-def load_seen():
-    return json.loads(SEEN_FILE.read_text()) if SEEN_FILE.exists() else []
+def seen_file(feed):
+    return STATE_DIR / f"seen-{feed['name']}.json"
 
 
-def save_seen(seen):
-    SEEN_FILE.write_text(json.dumps(seen[-2000:]))
+def load_seen(feed):
+    return json.loads(seen_file(feed).read_text()) if seen_file(feed).exists() else []
+
+
+def save_seen(feed, seen):
+    seen_file(feed).write_text(json.dumps(seen[-2000:]))
+
+
+def run_feed(feed):
+    seen = load_seen(feed)
+    new = [p for p in fetch_new(feed)[::-1] if p["id"] not in seen]  # 古い順に投稿
+    if not new:
+        post_slack(feed, f"本日の新着論文はありません（取得元: {get_source(feed)}）")
+    for paper in new:
+        post_slack(feed, format_message(paper, translate(paper["abstract"])))
+        seen.append(paper["id"])
+        save_seen(feed, seen)  # 投稿ごとに保存し、途中失敗で二重投稿しない
 
 
 def main():
-    seen = load_seen()
-    new = [p for p in fetch_new()[::-1] if p["id"] not in seen]  # 古い順に投稿
-    if not new:
-        post_slack(f"本日の新着論文はありません（取得元: {get_source()}）")
-    for paper in new:
-        post_slack(format_message(paper, translate(paper["abstract"])))
-        seen.append(paper["id"])
-        save_seen(seen)  # 投稿ごとに保存し、途中失敗で二重投稿しない
+    failed = False
+    for feed in load_feeds().values():
+        try:
+            run_feed(feed)
+        except Exception:
+            # 1 つのフィードの失敗で他のフィードを止めない。失敗はログに残し、終了コードで知らせる
+            print(f"[{feed['name']}] 失敗", file=sys.stderr)
+            traceback.print_exc()
+            failed = True
+    sys.exit(1 if failed else 0)
 
 
 if __name__ == "__main__":

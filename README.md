@@ -24,7 +24,7 @@ arXiv（または OpenAlex）の論文を Slack に流すボットです。投�
 | `arxiv`（既定） | arXiv のみ | `ARXIV_QUERY` |
 | `openalex` | [OpenAlex](https://openalex.org/)。arXiv に加え、論文誌・国際会議・他のプレプリントサーバーを含む | `OPENALEX_QUERY` |
 
-切り替えた結果は `source.txt` に保存され、新着投稿とランダム紹介の両方に反映されます。OpenAlex に載っている arXiv 論文は arXiv の ID で記録するので、取得元を切り替えても同じ論文は二重に流れません。OpenAlex には、アブストラクトがない論文（主に論文誌）もあります。その場合は「（アブストラクトなし）」と表示します。
+切り替えた結果はフィードごとに `source-<フィード名>.txt` に保存され、新着投稿とランダム紹介の両方に反映されます。OpenAlex に載っている arXiv 論文は arXiv の ID で記録するので、取得元を切り替えても同じ論文は二重に流れません。OpenAlex には、アブストラクトがない論文（主に論文誌）もあります。その場合は「（アブストラクトなし）」と表示します。
 
 ### arXiv の検索式
 
@@ -48,6 +48,39 @@ cat:cs.RO AND (all:humanoid OR all:biped OR all:bipedal OR all:legged OR all:qua
 ```
 
 `AND` / `OR` / `"..."` が使えます。OpenAlex には arXiv の `cs.RO` のような分野の指定がないので、ロボティクス以外の論文が少し混ざります。カンマは使えません（フィルタの区切り文字として扱われるため）。
+
+## フィード（複数の検索条件・投稿先）
+
+検索条件と投稿先チャンネルの組を「フィード」と呼びます。`bot.py` と同じディレクトリに `feeds.json` を置くと、フィードを複数定義できます。`feeds.json` がなければ、環境変数の設定を使う `default` という 1 つのフィードとして動きます。
+
+```json
+{
+  "default": {
+    "channel_id": "C0123456789"
+  },
+  "world-model": {
+    "webhook_url": "https://hooks.slack.com/services/XXX/YYY/ZZZ",
+    "channel_id": "C0987654321",
+    "arxiv_query": "cat:cs.LG AND all:\"world model\"",
+    "openalex_query": "\"world model\" AND \"reinforcement learning\""
+  }
+}
+```
+
+| 項目 | 内容 | 省略時 |
+|---|---|---|
+| `webhook_url` | 新着を流すチャンネルの Incoming Webhook URL | 環境変数 `SLACK_WEBHOOK_URL` |
+| `channel_id` | スラッシュコマンドを打ったときに、このフィードを対象にするチャンネルの ID | なし |
+| `arxiv_query` | arXiv の検索式 | 環境変数 `ARXIV_QUERY`（なければ上記の既定値） |
+| `openalex_query` | OpenAlex の検索式 | 環境変数 `OPENALEX_QUERY`（なければ上記の既定値） |
+| `max_results` | 1 回に取得する新着の件数 | 環境変数 `ARXIV_MAX_RESULTS`（なければ 50） |
+
+- 毎朝の実行では、すべてのフィードを順に処理し、それぞれの投稿先に流します。あるフィードで失敗しても、他のフィードは処理を続けます。
+- `/arxiv-random` と `/paper-source` は、コマンドを打ったチャンネルの `channel_id` を持つフィードが対象です。一致するフィードがなければ、`feeds.json` の先頭のフィードが対象になります。チャンネル ID は、Slack でチャンネル名をクリックした詳細画面の一番下に表示されます。
+- 投稿済みの論文 ID は `seen-<フィード名>.json` に、取得元は `source-<フィード名>.txt` に、フィードごとに記録します。フィードの名前を変えると記録が引き継がれないので、ファイル名も合わせて変えてください。
+- 新しいフィードを追加すると、最初の実行で直近 `max_results` 件がまとめて流れます。避けたい場合は、追加後に `/paper-source arxiv` をそのフィードのチャンネルで打つと、その時点の新着を既読にできます。
+- Webhook URL を含むので、`chmod 600 feeds.json` にしてください。Git の管理対象からは外してあります。
+- **翻訳の量に注意:** `cat:cs.LG` のような広い分野は 1 日 300 件ほどあり、Azure Translator の無料枠（月 200 万文字）を大きく超えます。キーワードで絞ってください。
 
 ---
 
@@ -103,7 +136,7 @@ uv sync   # .venv を作り、slack-bolt を入れる（bot.py は標準ライ�
 loginctl enable-linger
 ```
 
-`bot.py` は、投稿済みの論文 ID を同じディレクトリの `seen.json` に記録します。
+`bot.py` は、投稿済みの論文 ID を同じディレクトリの `seen-<フィード名>.json` に記録します。
 
 ### 環境変数ファイル
 
@@ -203,4 +236,4 @@ journalctl --user -u arxiv-random -u arxiv-new -f  # ログ
 - Slack の任意のチャンネルで `/arxiv-random` と打ち、論文が返ってくれば常駐側は動いています。
 - コードや環境変数を変えたら、`systemctl --user restart arxiv-random` で再起動します。新着投稿側は次の実行から反映されます。
 - 依存ライブラリを更新するときは、`uv lock --upgrade && uv sync` を実行してから再起動します。
-- `seen.json` を消すと、取得した範囲の新着が再び流れます。
+- `seen-<フィード名>.json` を消すと、取得した範囲の新着が再び流れます。
