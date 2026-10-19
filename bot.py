@@ -2,6 +2,7 @@
 
 検索式と投稿先の組（フィード）は feeds.json で複数定義できる。なければ環境変数の設定で 1 フィードとして動く。
 """
+import fcntl
 import json
 import os
 import pathlib
@@ -254,15 +255,20 @@ def save_seen(feed, seen):
     seen_file(feed).write_text(json.dumps(seen[-2000:]))
 
 
-def run_feed(feed):
-    seen = load_seen(feed)
-    new = [p for p in fetch_new(feed)[::-1] if p["id"] not in seen]  # 古い順に投稿
-    if not new:
-        post_slack(feed, f"本日の新着論文はありません（取得元: {get_source(feed)}）")
-    for paper in new:
-        post_slack(feed, format_message(paper, translate(paper["abstract"])))
-        seen.append(paper["id"])
-        save_seen(feed, seen)  # 投稿ごとに保存し、途中失敗で二重投稿しない
+def run_feed(feed, notify_empty=True):
+    """フィードの新着を投稿し、投稿した件数を返す。notify_empty なら新着ゼロのときにお知らせを流す。"""
+    # 定期実行と /paper-rerun が同時に走っても二重投稿しないよう、フィードごとに排他する
+    with open(STATE_DIR / f".lock-{feed['name']}", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        seen = load_seen(feed)  # ロックを取ってから読む。先に走った側の投稿済みを反映するため
+        new = [p for p in fetch_new(feed)[::-1] if p["id"] not in seen]  # 古い順に投稿
+        if not new and notify_empty:
+            post_slack(feed, f"本日の新着論文はありません（取得元: {get_source(feed)}）")
+        for paper in new:
+            post_slack(feed, format_message(paper, translate(paper["abstract"])))
+            seen.append(paper["id"])
+            save_seen(feed, seen)  # 投稿ごとに保存し、途中失敗で二重投稿しない
+        return len(new)
 
 
 def describe_error(e):

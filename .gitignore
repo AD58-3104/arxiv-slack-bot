@@ -4,3 +4,4 @@ seen-*.json
 source-*.txt
 usage.json
 feeds.json
+.lock-*

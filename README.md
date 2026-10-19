@@ -18,6 +18,7 @@ arXiv（または OpenAlex）の論文を Slack に流すボットです。投�
 | `/arxiv-random` | 現在の取得元で、全期間の該当論文から 1 本をランダムに返す |
 | `/paper-source` | 現在の取得元を表示する |
 | `/paper-source arxiv` / `/paper-source openalex` | 取得元を切り替える。切り替えた時点の新着は既読扱いにし、過去の論文がまとめて流れないようにする |
+| `/paper-rerun` | 新着投稿を手動で再実行する。毎朝の実行がエラーで止まったときに使う。投稿済みの論文は流さず、結果の件数を返す |
 | `/translator-usage` | 今月の Azure Translator の使用文字数と、無料枠の残りを返す（打った本人にだけ表示） |
 
 `/translator-usage` の値は、このボットが翻訳に送った文字数を `usage.json` に月ごと（UTC）に記録して計算したものです。同じキーを他でも使っている場合や、記録を始める前の分は含まれません。正確な値は Azure Portal の Translator リソース →「メトリック」の「Text Characters Translated」で確認できます。無料枠以外のプランでは、環境変数 `AZURE_MONTHLY_CHAR_LIMIT` で上限を変えられます。
@@ -88,7 +89,7 @@ cat:cs.RO AND (all:humanoid OR all:biped OR all:bipedal OR all:legged OR all:qua
 | `max_results` | 1 回に取得する新着の件数 | 環境変数 `ARXIV_MAX_RESULTS`（なければ 50） |
 
 - 毎朝の実行では、すべてのフィードを順に処理し、それぞれの投稿先に流します。あるフィードで失敗しても、他のフィードは処理を続けます。
-- `/arxiv-random` と `/paper-source` は、コマンドを打ったチャンネルの `channel_id` を持つフィードが対象です。一致するフィードがなければ、`feeds.json` の先頭のフィードが対象になります。チャンネル ID は、Slack でチャンネル名をクリックした詳細画面の一番下に表示されます。
+- `/arxiv-random`・`/paper-source`・`/paper-rerun` は、コマンドを打ったチャンネルの `channel_id` を持つフィードが対象です。一致するフィードがなければ、`feeds.json` の先頭のフィードが対象になります。チャンネル ID は、Slack でチャンネル名をクリックした詳細画面の一番下に表示されます。
 - 投稿済みの論文 ID は `seen-<フィード名>.json` に、取得元は `source-<フィード名>.txt` に、フィードごとに記録します。フィードの名前を変えると記録が引き継がれないので、ファイル名も合わせて変えてください。
 - 新しいフィードを追加すると、最初の実行で直近 `max_results` 件がまとめて流れます。避けたい場合は、追加後に `/paper-source arxiv` をそのフィードのチャンネルで打つと、その時点の新着を既読にできます。検索式を広げたときも同じです。
 - `feeds.json` は実行のたびに読み直すので、書き換えても再起動は要りません。
@@ -114,6 +115,7 @@ cat:cs.RO AND (all:humanoid OR all:biped OR all:bipedal OR all:legged OR all:qua
    - Command は `/arxiv-random`、Short Description は任意（例: 論文をランダムに 1 本紹介）にして保存します。
    - 同じ手順で `/paper-source` も作ります。Short Description は任意（例: 論文の取得元を切り替え）、Usage Hint は `[arxiv|openalex]` にします。
    - 同じ手順で `/translator-usage` も作ります。Short Description は任意（例: 翻訳の残り文字数）です。
+   - 同じ手順で `/paper-rerun` も作ります。Short Description は任意（例: 新着投稿を再実行）です。
    - Socket Mode が有効なら Request URL の欄は出ないので、入力は要りません。
 
 4. **Incoming Webhook を有効にする**（`bot.py` 用）
@@ -247,7 +249,8 @@ journalctl --user -u arxiv-random -u arxiv-new -f  # ログ
 ```
 
 - Slack の任意のチャンネルで `/arxiv-random` と打ち、論文が返ってくれば常駐側は動いています。
-- 新着投稿でエラーが起きると、そのフィードのチャンネルに ⚠️ のメッセージが届きます。`feeds.json` の読み込みに失敗した場合は、`SLACK_WEBHOOK_URL` のチャンネルに届きます。詳細は `journalctl --user -u arxiv-new` で確認できます。
+- 外部のサービス（arXiv・OpenAlex・Azure Translator・Slack）が 429 や一時的なエラーを返したときは、Retry-After に従うか 30・60・120・240 秒待って、最大 5 回まで試します。Slack への投稿だけは、二重投稿を避けるため 429 のときにだけ再試行します。arXiv への問い合わせは、利用規約に従って 3 秒以上の間隔を空けます。
+- 新着投稿でエラーが起きると、そのフィードのチャンネルに ⚠️ のメッセージが届きます。時間をおいてからそのチャンネルで `/paper-rerun` を打つと、投稿できなかった分を流せます。定期実行と同時に走っても、フィードごとに排他しているので二重には投稿されません。`feeds.json` の読み込みに失敗した場合は、`SLACK_WEBHOOK_URL` のチャンネルに届きます。詳細は `journalctl --user -u arxiv-new` で確認できます。
 - `/arxiv-random` などのコマンドのエラーは、コマンドを打った本人にだけ返します。常駐プロセス自体が落ち続ける場合（トークンの失効など）は通知されないので、コマンドが反応しなくなったら `systemctl --user status arxiv-random.service` を確認してください。
 - コードや環境変数を変えたら、`systemctl --user restart arxiv-random` で再起動します。新着投稿側は次の実行から反映されます。
 - 依存ライブラリを更新するときは、`uv lock --upgrade && uv sync` を実行してから再起動します。
