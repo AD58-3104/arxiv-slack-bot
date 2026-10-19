@@ -8,6 +8,7 @@ import pathlib
 import random
 import re
 import sys
+import threading
 import time
 import traceback
 import urllib.error
@@ -37,6 +38,45 @@ USAGE_FILE = pathlib.Path(__file__).with_name("usage.json")  # 月ごとの翻�
 MONTHLY_CHAR_LIMIT = int(os.environ.get("AZURE_MONTHLY_CHAR_LIMIT", "2000000"))  # F0 の無料枠
 ATOM = "{http://www.w3.org/2005/Atom}"
 USER_AGENT = "arxiv-slack-bot/0.1 (+https://github.com/AD58-3104/arxiv-slack-bot)"
+_arxiv_lock = threading.Lock()  # random_bot はコマンドを並行に処理するので、間隔の管理を排他にする
+_arxiv_last = 0.0
+
+
+def open_with_retry(req, timeout=60, retry_server_errors=True):
+    """外部 API へのリクエスト。一時的なエラーは待って最大 5 回まで試す。
+
+    429 は常に再試行する。5xx と通信エラーは retry_server_errors のときだけ再試行する
+    （Slack への投稿は、実は届いていた場合に二重投稿になるので 429 だけにする）。
+    待ち時間は Retry-After（秒）があればそれに従い、なければ 30, 60, 120, 240 秒。
+    """
+    if isinstance(req, str):
+        req = urllib.request.Request(req)
+    req.add_header("User-Agent", USER_AGENT)  # 既定の Python-urllib だと arXiv で後回しにされる
+    for attempt in range(5):
+        wait = 30 * 2 ** attempt
+        try:
+            if req.host == "export.arxiv.org":
+                _wait_for_arxiv()
+            return urllib.request.urlopen(req, timeout=timeout)
+        except urllib.error.HTTPError as e:
+            if attempt == 4 or not (e.code == 429 or (retry_server_errors and e.code >= 500)):
+                raise
+            retry_after = e.headers.get("Retry-After", "")
+            if retry_after.isdigit():
+                wait = min(int(retry_after), 600)
+        except (urllib.error.URLError, TimeoutError):
+            if attempt == 4 or not retry_server_errors:
+                raise
+        print(f"{req.host}: 一時的なエラーのため {wait} 秒後に再試行します", file=sys.stderr)
+        time.sleep(wait)
+
+
+def _wait_for_arxiv():
+    """arXiv API の利用規約（3 秒に 1 回まで）を守るため、前回から 3 秒たつまで待つ。"""
+    global _arxiv_last
+    with _arxiv_lock:
+        time.sleep(max(0.0, _arxiv_last + 3 - time.monotonic()))
+        _arxiv_last = time.monotonic()
 
 
 def load_feeds():
@@ -76,7 +116,7 @@ def fetch_arxiv(feed, start=0, max_results=None):
         "start": start,
         "max_results": max_results or feed["max_results"],
     })
-    with urllib.request.urlopen(f"https://export.arxiv.org/api/query?{params}", timeout=60) as r:
+    with open_with_retry(f"https://export.arxiv.org/api/query?{params}") as r:
         root = ET.fromstring(r.read())
     papers = []
     for e in root.iter(f"{ATOM}entry"):
@@ -96,7 +136,7 @@ def fetch_openalex(feed, **params):
     params["filter"] = (f"title_and_abstract.search:{feed['openalex_query']},"
                         "type:article|preprint|conference-paper")  # 本・データセット等を除く
     url = f"https://api.openalex.org/works?{urllib.parse.urlencode(params)}"
-    with urllib.request.urlopen(url, timeout=60) as r:
+    with open_with_retry(url) as r:
         works = json.load(r)["results"]
     papers = []
     for w in works:
@@ -159,17 +199,11 @@ def translate(text):
             "X-ClientTraceId": str(uuid.uuid4()),
         },
     )
-    for attempt in range(5):
-        try:
-            with urllib.request.urlopen(req, timeout=60) as r:
-                result = json.load(r)[0]["translations"][0]["text"]
-            add_usage(len(text))
-            return result
-        except urllib.error.HTTPError as e:
-            # 無料プラン (F0) は 1 分あたりの文字数に上限があり、超えると 429 が返る
-            if e.code != 429 or attempt == 4:
-                raise
-            time.sleep(int(e.headers.get("Retry-After") or 60))
+    # 無料プラン (F0) は 1 分あたりの文字数に上限があり、超えると 429 が返る
+    with open_with_retry(req) as r:
+        result = json.load(r)[0]["translations"][0]["text"]
+    add_usage(len(text))
+    return result
 
 
 def slack_escape(s):
@@ -205,7 +239,7 @@ def post_slack(feed, text):
         data=json.dumps({"text": text, "unfurl_links": False}).encode(),
         headers={"Content-Type": "application/json"},
     )
-    urllib.request.urlopen(req, timeout=30).close()
+    open_with_retry(req, timeout=30, retry_server_errors=False).close()  # Webhook は 1 秒 1 件程度で 429 になる
 
 
 def seen_file(feed):
