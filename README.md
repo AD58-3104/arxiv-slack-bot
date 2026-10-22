@@ -69,6 +69,12 @@ cat:cs.RO AND (all:humanoid OR all:biped OR all:bipedal OR all:legged OR all:qua
     "channel_id": "C0CA8L2AZ0C",
     "arxiv_query": "(cat:cs.LG OR cat:cs.RO) AND all:\"world model\"",
     "openalex_query": "\"world model\" AND learning"
+  },
+  "humanoid-hardware": {
+    "webhook_url": "https://hooks.slack.com/services/XXX/YYY/ZZZ",
+    "channel_id": "C0CB261N2UT",
+    "arxiv_query": "cat:cs.RO AND abs:humanoid AND (ti:design OR ti:actuator OR ti:actuation OR ti:hardware OR ti:mechanism OR ti:mechanical OR ti:\"open-source\" OR ti:\"low-cost\" OR ti:elastic OR ti:tendon OR ti:musculoskeletal OR ti:skin OR ti:sensor OR abs:\"mechanical design\" OR abs:\"hardware design\" OR abs:\"actuator design\" OR abs:\"series elastic\" OR abs:\"quasi-direct drive\" OR abs:\"parallel mechanism\" OR abs:linkage)",
+    "openalex_query": "humanoid AND (actuator OR \"mechanical design\" OR \"hardware design\" OR mechanism OR \"series elastic\" OR tendon)"
   }
 }
 ```
@@ -77,8 +83,11 @@ cat:cs.RO AND (all:humanoid OR all:biped OR all:bipedal OR all:legged OR all:qua
 |---|---|---|---|
 | `default` | ロボティクス（cs.RO）で、ヒューマノイド・二足・脚・四足 × 強化学習 | 既存のチャンネル（`SLACK_WEBHOOK_URL`） | 1 日約 5 件 |
 | `world-model` | 機械学習（cs.LG）またはロボティクス（cs.RO）で、world model に関するもの | 世界モデル用のチャンネル | 1 日約 15 件 |
+| `humanoid-hardware` | ロボティクス（cs.RO）で、ヒューマノイドのハードウェア（機構・アクチュエータ・ハンド・皮膚やセンサー・オープンソース機体など） | ヒューマノイドハードウェア用のチャンネル | 週に 2〜3 件 |
 
 `world-model` の OpenAlex の検索式は、Zenodo に登録された無関係な論文がかなり混ざります。このフィードは arXiv を取得元にして使う前提です。
+
+`humanoid-hardware` は、タイトルのハードウェア系の語（design・actuator・mechanism など）と、アブストラクトの具体的な機構の語で絞っています。「hardware」「motor」をアブストラクト全体から拾うと、実機実験をしただけの制御論文が大量に入るため、あえて外しています。
 
 | 項目 | 内容 | 省略時 |
 |---|---|---|
